@@ -78,6 +78,19 @@
   </div>
 
   <div class="card">
+    <label>保存先（Google ドライブ）</label>
+    <div class="field">
+      <label for="gasUrl">保存用スクリプトのURL</label>
+      <input id="gasUrl" type="url" autocomplete="off" placeholder="https://script.google.com/macros/s/.../exec">
+    </div>
+    <div class="field">
+      <label for="gasToken">合言葉</label>
+      <input id="gasToken" type="password" autocomplete="off">
+      <div class="hint">生成した音声はページに残さず、MP3 にしてドライブのフォルダへ保存します。設定方法は <a class="dl" href="https://github.com/SyoheiFujita/gemini-tts-app#ドライブ保存の設定" target="_blank" rel="noopener">こちら</a>。</div>
+    </div>
+  </div>
+
+  <div class="card">
     <label for="text">読み上げテキスト</label>
     <textarea id="text" placeholder="ここに読み上げる文章を入力（最大3000文字）"></textarea>
     <div class="counter" id="counter">0 / 3000</div>
@@ -91,16 +104,23 @@
   </div>
 
   <div class="card" id="result" hidden>
-    <label>生成結果</label>
-    <audio id="player" controls></audio>
-    <div class="actions" style="margin-top:10px">
-      <button id="share" hidden>共有・ファイルに保存</button>
-      <a class="dl" id="dl" download="tts.wav">WAV をダウンロード</a>
-    </div>
-    <div class="hint">生成中は画面を開いたままにしてください（アプリを切り替えると止まることがあります）。</div>
+    <label>保存しました</label>
+    <div id="savedName"></div>
+    <div style="margin-top:6px"><a class="dl" id="savedLink" target="_blank" rel="noopener">ドライブで開く</a></div>
   </div>
+
+  <div class="card" id="retryBox" hidden>
+    <label>ドライブへの保存に失敗しました</label>
+    <div class="hint">音声はまだこの画面のメモリ内にあります。設定を確認してから再送してください。</div>
+    <div class="actions" style="margin-top:10px">
+      <button id="retry">もう一度保存</button>
+      <button id="discard" class="ghost">破棄</button>
+    </div>
+  </div>
+  <p class="hint">生成中は画面を開いたままにしてください（アプリを切り替えると止まることがあります）。</p>
 </main>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/lamejs/1.2.1/lame.min.js"></script>
 <script>
 const API = "https://generativelanguage.googleapis.com/v1beta";
 const MAX_CHARS = 3000;
@@ -112,7 +132,8 @@ const store = {
   get(k){ try { return localStorage.getItem(k); } catch { return null; } },
   set(k,v){ try { localStorage.setItem(k,v); } catch {} },
 };
-["apiKey","voice","style","model"].forEach(id => {
+const FIELDS = ["apiKey","voice","style","model","gasUrl","gasToken"];
+FIELDS.forEach(id => {
   const v = store.get("tts_"+id); if (v !== null) $(id).value = v;
   $(id).addEventListener("change", () => store.set("tts_"+id, $(id).value.trim()));
 });
@@ -228,21 +249,6 @@ function stripWav(u){
   return u.slice(44);
 }
 
-function buildWav(pcmParts, gapMs = 250){
-  const gap = new Uint8Array(Math.round(SAMPLE_RATE * gapMs / 1000) * 2);
-  const parts = pcmParts.flatMap((p, i) => i ? [gap, p] : [p]);
-  const dataLen = parts.reduce((a, p) => a + p.length, 0);
-  const buf = new ArrayBuffer(44 + dataLen); const dv = new DataView(buf);
-  const w = (o, s) => [...s].forEach((c, i) => dv.setUint8(o+i, c.charCodeAt(0)));
-  w(0,"RIFF"); dv.setUint32(4, 36 + dataLen, true); w(8,"WAVE");
-  w(12,"fmt "); dv.setUint32(16,16,true); dv.setUint16(20,1,true); dv.setUint16(22,1,true);
-  dv.setUint32(24,SAMPLE_RATE,true); dv.setUint32(28,SAMPLE_RATE*2,true); dv.setUint16(32,2,true); dv.setUint16(34,16,true);
-  w(36,"data"); dv.setUint32(40, dataLen, true);
-  let off = 44; const out = new Uint8Array(buf);
-  for (const p of parts) { out.set(p, off); off += p.length; }
-  return new Blob([buf], { type: "audio/wav" });
-}
-
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let abortCtl = null;
 
@@ -268,7 +274,10 @@ $("go").addEventListener("click", async () => {
   if (!voiceIn) return log("ボイスを入力してください", true);
   if (!text) return log("テキストを入力してください", true);
   if ([...text].length > MAX_CHARS) return log(`テキストは${MAX_CHARS}文字以内にしてください`, true);
-  ["apiKey","voice","style","model"].forEach(id => store.set("tts_"+id, $(id).value.trim()));
+  if (!$("gasUrl").value.trim().startsWith("https://script.google.com/")) return log("保存用スクリプトのURLを入力してください", true);
+  if (!$("gasToken").value.trim()) return log("合言葉を入力してください", true);
+  FIELDS.forEach(id => store.set("tts_"+id, $(id).value.trim()));
+  pending = null; $("retryBox").hidden = true;
 
   abortCtl = new AbortController();
   let wakeLock = null;
@@ -287,16 +296,13 @@ $("go").addEventListener("click", async () => {
       pcms.push(await withRetry(() => synthesize(chunks[i], voice, style, model), `[${i+1}]`));
       prog.value = i + 1;
     }
-    const blob = buildWav(pcms);
-    const url = URL.createObjectURL(blob);
-    const fname = `tts_${new Date().toISOString().slice(0,19).replace(/[:T]/g,"-")}.wav`;
-    $("player").src = url; $("dl").href = url; $("dl").download = fname;
-    lastFile = new File([blob], fname, { type: "audio/wav" });
-    $("share").hidden = !(navigator.canShare && navigator.canShare({ files: [lastFile] }));
-    $("result").hidden = false;
-    $("result").scrollIntoView({ behavior: "smooth" });
-    const sec = (blob.size - 44) / 2 / SAMPLE_RATE;
-    log(`完了: ${Math.floor(sec/60)}分${Math.round(sec%60)}秒`);
+    const pcm = joinPcm(pcms);
+    const sec = pcm.length / SAMPLE_RATE;
+    log(`音声生成完了: ${Math.floor(sec/60)}分${Math.round(sec%60)}秒。MP3 に変換中…`);
+    const mp3 = await encodeMp3(pcm);
+    log(`MP3 変換完了（${(mp3.size/1024/1024).toFixed(1)} MB）`);
+    pending = { blob: mp3, filename: makeFilename(text), description: text };
+    await upload();
   } catch (e) {
     log(e.name === "AbortError" ? "中止しました" : "エラー: " + e.message, true);
   } finally {
@@ -305,12 +311,84 @@ $("go").addEventListener("click", async () => {
   }
 });
 
-let lastFile = null;
-$("share").addEventListener("click", async () => {
-  if (!lastFile) return;
-  try { await navigator.share({ files: [lastFile], title: lastFile.name }); }
-  catch (e) { if (e.name !== "AbortError") log("共有できませんでした: " + e.message, true); }
+// ---- PCM 結合 → MP3 → ドライブ ----
+let pending = null;   // 保存待ちの音声（失敗時の再送用。保存成功で破棄）
+
+function joinPcm(parts, gapMs = 250){
+  const gap = Math.round(SAMPLE_RATE * gapMs / 1000);
+  const samples = parts.map(p => new Int16Array(p.buffer.slice(p.byteOffset, p.byteOffset + (p.byteLength & ~1))));
+  const total = samples.reduce((a, s) => a + s.length, 0) + gap * Math.max(0, samples.length - 1);
+  const out = new Int16Array(total);
+  let off = 0;
+  samples.forEach((s, i) => { if (i) off += gap; out.set(s, off); off += s.length; });
+  return out;
+}
+
+async function encodeMp3(pcm){
+  if (!window.lamejs) throw new Error("MP3 変換ライブラリを読み込めませんでした。通信状況を確認して再読み込みしてください");
+  const enc = new lamejs.Mp3Encoder(1, SAMPLE_RATE, 96);
+  const out = []; const BLOCK = 1152 * 100;
+  for (let i = 0; i < pcm.length; i += BLOCK) {
+    for (let j = i; j < Math.min(i + BLOCK, pcm.length); j += 1152) {
+      const buf = enc.encodeBuffer(pcm.subarray(j, Math.min(j + 1152, pcm.length)));
+      if (buf.length) out.push(new Uint8Array(buf));
+    }
+    await sleep(0); // 画面を固まらせない
+  }
+  const end = enc.flush(); if (end.length) out.push(new Uint8Array(end));
+  return new Blob(out, { type: "audio/mpeg" });
+}
+
+function makeFilename(text){
+  const d = new Date(), z = n => String(n).padStart(2, "0");
+  const ts = `${d.getFullYear()}${z(d.getMonth()+1)}${z(d.getDate())}-${z(d.getHours())}${z(d.getMinutes())}${z(d.getSeconds())}`;
+  const head = [...text.replace(/[\\/:*?"<>|\s]+/g, "")].slice(0, 15).join("");
+  return `tts_${ts}_${head}.mp3`;
+}
+
+function blobToBase64(blob){
+  return new Promise((ok, ng) => {
+    const r = new FileReader();
+    r.onload = () => ok(String(r.result).split(",")[1]);
+    r.onerror = () => ng(r.error);
+    r.readAsDataURL(blob);
+  });
+}
+
+async function upload(){
+  if (!pending) return;
+  log("Google ドライブへ保存中…");
+  try {
+    const data = await blobToBase64(pending.blob);
+    const res = await withRetry(async () => {
+      const r = await fetch($("gasUrl").value.trim(), {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" }, // プリフライトを避ける
+        body: JSON.stringify({ token: $("gasToken").value.trim(), filename: pending.filename,
+                               mimeType: "audio/mpeg", data, description: pending.description }),
+      });
+      const t = await r.text();
+      let j; try { j = JSON.parse(t); } catch { const e = new Error("スクリプトの応答が読めません（URLとデプロイ設定を確認してください）"); e.status = 400; throw e; }
+      if (!j.ok) { const e = new Error(j.error || "保存に失敗しました"); e.status = 400; throw e; }
+      return j;
+    }, "保存");
+    $("savedName").textContent = res.name;
+    $("savedLink").href = res.url;
+    $("result").hidden = false; $("retryBox").hidden = true;
+    $("result").scrollIntoView({ behavior: "smooth" });
+    log("保存しました: " + res.name);
+    pending = null;  // ページ上には残さない
+  } catch (e) {
+    log("ドライブへの保存に失敗: " + e.message, true);
+    $("retryBox").hidden = false;
+  }
+}
+
+$("retry").addEventListener("click", async () => {
+  FIELDS.forEach(id => store.set("tts_"+id, $(id).value.trim()));
+  $("retry").disabled = true; await upload(); $("retry").disabled = false;
 });
+$("discard").addEventListener("click", () => { pending = null; $("retryBox").hidden = true; log("音声を破棄しました"); });
 
 $("stop").addEventListener("click", () => abortCtl?.abort());
 
