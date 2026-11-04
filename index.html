@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#2563eb">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="TTS音声生成">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml"><title>Gemini TTS 音声生成</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --fg:#1d2330; --muted:#6b7280; --line:#e3e6eb; --accent:#2563eb; --err:#c0392b; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14161b; --card:#1d2027; --fg:#e8eaef; --muted:#9aa1ad; --line:#2d313a; --accent:#5b8cff; --err:#ff7b6b; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.6 system-ui, "Segoe UI", "Yu Gothic UI", sans-serif; }
+  main { max-width: 820px; margin: 0 auto;
+    padding: max(20px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(48px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); }
+  input, textarea { font-size: 16px !important; } /* iOS の自動ズーム防止 */
+  button { min-height: 46px; }
+  @media (max-width: 600px) {
+    .actions button { flex: 1 1 100%; }
+    #go { font-size: 17px; }
+    textarea { min-height: 220px; }
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; font-size: 13px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:14px; }
+  label { display:block; font-weight:600; font-size:13px; margin-bottom:6px; }
+  input, textarea { width:100%; padding:9px 10px; border:1px solid var(--line); border-radius:7px; background:var(--bg); color:var(--fg); font:inherit; }
+  textarea { min-height: 280px; resize: vertical; }
+  .row { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
+  @media (max-width: 600px) { .row { grid-template-columns: 1fr; } }
+  .field { margin-bottom: 12px; }
+  .hint { color:var(--muted); font-size:12px; margin-top:4px; }
+  .counter { text-align:right; font-size:12px; color:var(--muted); margin-top:4px; }
+  .counter.over { color: var(--err); font-weight:600; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:7px; padding:10px 18px; font:inherit; font-weight:600; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  button.ghost { background:transparent; color:var(--accent); border:1px solid var(--line); }
+  .actions { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  progress { width:100%; height:8px; margin-top:12px; }
+  #log { font: 12px/1.5 ui-monospace, Consolas, monospace; color:var(--muted); white-space:pre-wrap; margin-top:10px; max-height:180px; overflow:auto; }
+  #log .e { color: var(--err); }
+  audio { width:100%; margin-top:10px; }
+  a.dl { color: var(--accent); font-weight:600; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Gemini TTS 音声生成</h1>
+  <p class="sub">モデル: gemini-3.8-flash-tts / 最大3000文字のテキストを分割して音声化し、1つのWAVにまとめます。</p>
+
+  <div class="card">
+    <div class="field">
+      <label for="apiKey">Gemini API キー</label>
+      <input id="apiKey" type="password" autocomplete="off" placeholder="AIza...">
+      <div class="hint">このブラウザ内にだけ保存され、Google の API 以外には送信しません。</div>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label for="voice">ボイス</label>
+        <input id="voice" value="test1101">
+        <div class="hint">表示名（例: test1101）、voice_… のID、またはプリセット名（Kore など）</div>
+      </div>
+      <div class="field">
+        <label for="style">スタイル（任意）</label>
+        <input id="style" placeholder="例: 落ち着いたナレーション調で">
+        <div class="hint">デザインボイスの場合は空欄推奨</div>
+      </div>
+    </div>
+    <div class="field">
+      <label for="model">モデルID</label>
+      <input id="model" value="gemini-3.8-flash-tts">
+    </div>
+  </div>
+
+  <div class="card">
+    <label for="text">読み上げテキスト</label>
+    <textarea id="text" placeholder="ここに読み上げる文章を入力（最大3000文字）"></textarea>
+    <div class="counter" id="counter">0 / 3000</div>
+    <div class="actions" style="margin-top:10px">
+      <button id="go">音声を生成</button>
+      <button id="stop" class="ghost" disabled>中止</button>
+      <button id="listVoices" class="ghost">ボイス一覧を確認</button>
+    </div>
+    <progress id="prog" value="0" max="1" hidden></progress>
+    <div id="log"></div>
+  </div>
+
+  <div class="card" id="result" hidden>
+    <label>生成結果</label>
+    <audio id="player" controls></audio>
+    <div class="actions" style="margin-top:10px">
+      <button id="share" hidden>共有・ファイルに保存</button>
+      <a class="dl" id="dl" download="tts.wav">WAV をダウンロード</a>
+    </div>
+    <div class="hint">生成中は画面を開いたままにしてください（アプリを切り替えると止まることがあります）。</div>
+  </div>
+</main>
+
+<script>
+const API = "https://generativelanguage.googleapis.com/v1beta";
+const MAX_CHARS = 3000;
+const CHUNK_CHARS = 900;   // 1リクエストあたりの文字数の目安（出力トークン上限に余裕を持たせる）
+const SAMPLE_RATE = 24000;
+
+const $ = id => document.getElementById(id);
+const store = {
+  get(k){ try { return localStorage.getItem(k); } catch { return null; } },
+  set(k,v){ try { localStorage.setItem(k,v); } catch {} },
+};
+["apiKey","voice","style","model"].forEach(id => {
+  const v = store.get("tts_"+id); if (v !== null) $(id).value = v;
+  $(id).addEventListener("change", () => store.set("tts_"+id, $(id).value.trim()));
+});
+
+const textEl = $("text");
+function updateCounter(){
+  const n = [...textEl.value].length;
+  $("counter").textContent = `${n} / ${MAX_CHARS}`;
+  $("counter").classList.toggle("over", n > MAX_CHARS);
+}
+textEl.addEventListener("input", updateCounter); updateCounter();
+
+function log(msg, isErr){
+  const d = document.createElement("div");
+  if (isErr) d.className = "e";
+  d.textContent = msg;
+  $("log").appendChild(d); $("log").scrollTop = 1e9;
+}
+
+async function api(path, opts = {}){
+  const res = await fetch(API + path, {
+    ...opts,
+    signal: abortCtl?.signal,
+    headers: { "x-goog-api-key": $("apiKey").value.trim(), "Content-Type": "application/json", ...(opts.headers||{}) },
+  });
+  const body = await res.text();
+  if (!res.ok) {
+    let m = body; try { m = JSON.parse(body).error?.message || body; } catch {}
+    const err = new Error(`HTTP ${res.status}: ${m}`); err.status = res.status; throw err;
+  }
+  return body ? JSON.parse(body) : {};
+}
+
+async function listAllVoices(){
+  const out = [];
+  let token = "";
+  for (let i = 0; i < 50; i++) {
+    const q = new URLSearchParams({ page_size: "100" });
+    if (token) q.set("page_token", token);
+    const r = await api("/voices?" + q);
+    out.push(...(r.voices || []));
+    token = r.next_page_token || r.nextPageToken || "";
+    if (!token) break;
+  }
+  return out;
+}
+
+const voiceName = v => v.display_name ?? v.displayName ?? "";
+
+// 入力されたボイス名 → リクエストに渡す voice 値
+async function resolveVoice(input){
+  if (/^(voice_|voicekey_)/.test(input)) return input;
+  const voices = await listAllVoices();
+  const hit = voices.find(v => voiceName(v) === input)
+           || voices.find(v => voiceName(v).toLowerCase() === input.toLowerCase());
+  if (hit) { log(`ボイス「${input}」→ ${hit.id}`); return hit.id; }
+  log(`保存済みボイスに「${input}」が見つからないため、プリセット名として使います`);
+  return input;
+}
+
+// 文の区切りで分割
+function splitText(text){
+  const sentences = text.replace(/\r\n/g, "\n").match(/[^。！？!?\n]+[。！？!?」』）)]*\n*|\n+/g) || [text];
+  const chunks = []; let cur = "";
+  for (const s of sentences) {
+    if ([...cur].length + [...s].length > CHUNK_CHARS && cur.trim()) { chunks.push(cur.trim()); cur = ""; }
+    if ([...s].length > CHUNK_CHARS) {           // 句点のない長い文は強制分割
+      const cs = [...s];
+      for (let i = 0; i < cs.length; i += CHUNK_CHARS) chunks.push(cs.slice(i, i + CHUNK_CHARS).join("").trim());
+      continue;
+    }
+    cur += s;
+  }
+  if (cur.trim()) chunks.push(cur.trim());
+  return chunks.filter(Boolean);
+}
+
+function b64ToBytes(b64){
+  const bin = atob(b64); const u = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+  return u;
+}
+
+async function synthesize(text, voice, style, model){
+  const part = { type: "text", text };
+  if (style) part.annotations = [{ type: "speech_metadata", style }];
+  const r = await api("/interactions", {
+    method: "POST",
+    body: JSON.stringify({
+      model,
+      input: [{ type: "user_input", content: [part] }],
+      response_format: { type: "audio", mime_type: "audio/l16", sample_rate: SAMPLE_RATE },
+      generation_config: { speech_config: [{ voice }] },
+    }),
+  });
+  const audios = (r.steps || []).filter(s => s.type === "model_output")
+    .flatMap(s => s.content || []).filter(c => c.type === "audio" && c.data);
+  if (!audios.length) throw new Error("レスポンスに音声データがありません: " + JSON.stringify(r).slice(0, 300));
+  let pcm = b64ToBytes(audios[audios.length - 1].data);
+  // 念のため WAV ヘッダ付きで返ってきた場合は除去
+  if (pcm.length > 44 && String.fromCharCode(...pcm.slice(0,4)) === "RIFF") pcm = stripWav(pcm);
+  return pcm;
+}
+
+function stripWav(u){
+  const dv = new DataView(u.buffer, u.byteOffset, u.byteLength);
+  let p = 12;
+  while (p + 8 <= u.length) {
+    const id = String.fromCharCode(...u.slice(p, p+4)); const size = dv.getUint32(p+4, true);
+    if (id === "data") return u.slice(p+8, p+8+size);
+    p += 8 + size;
+  }
+  return u.slice(44);
+}
+
+function buildWav(pcmParts, gapMs = 250){
+  const gap = new Uint8Array(Math.round(SAMPLE_RATE * gapMs / 1000) * 2);
+  const parts = pcmParts.flatMap((p, i) => i ? [gap, p] : [p]);
+  const dataLen = parts.reduce((a, p) => a + p.length, 0);
+  const buf = new ArrayBuffer(44 + dataLen); const dv = new DataView(buf);
+  const w = (o, s) => [...s].forEach((c, i) => dv.setUint8(o+i, c.charCodeAt(0)));
+  w(0,"RIFF"); dv.setUint32(4, 36 + dataLen, true); w(8,"WAVE");
+  w(12,"fmt "); dv.setUint32(16,16,true); dv.setUint16(20,1,true); dv.setUint16(22,1,true);
+  dv.setUint32(24,SAMPLE_RATE,true); dv.setUint32(28,SAMPLE_RATE*2,true); dv.setUint16(32,2,true); dv.setUint16(34,16,true);
+  w(36,"data"); dv.setUint32(40, dataLen, true);
+  let off = 44; const out = new Uint8Array(buf);
+  for (const p of parts) { out.set(p, off); off += p.length; }
+  return new Blob([buf], { type: "audio/wav" });
+}
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+let abortCtl = null;
+
+async function withRetry(fn, label){
+  for (let a = 1; ; a++) {
+    try { return await fn(); }
+    catch (e) {
+      if (e.name === "AbortError") throw e;
+      const retryable = !e.status || e.status === 429 || e.status >= 500;
+      if (!retryable || a >= 4) throw e;
+      const wait = 2000 * 2 ** (a - 1);
+      log(`${label}: ${e.message} → ${wait/1000}秒後に再試行 (${a}/3)`, true);
+      await sleep(wait);
+    }
+  }
+}
+
+$("go").addEventListener("click", async () => {
+  const key = $("apiKey").value.trim(), voiceIn = $("voice").value.trim();
+  const text = textEl.value.trim(), style = $("style").value.trim(), model = $("model").value.trim();
+  $("log").innerHTML = "";
+  if (!key) return log("API キーを入力してください", true);
+  if (!voiceIn) return log("ボイスを入力してください", true);
+  if (!text) return log("テキストを入力してください", true);
+  if ([...text].length > MAX_CHARS) return log(`テキストは${MAX_CHARS}文字以内にしてください`, true);
+  ["apiKey","voice","style","model"].forEach(id => store.set("tts_"+id, $(id).value.trim()));
+
+  abortCtl = new AbortController();
+  let wakeLock = null;
+  try { wakeLock = await navigator.wakeLock?.request("screen"); } catch {}
+  abortCtl.signal.addEventListener("abort", () => wakeLock?.release().catch(() => {}));
+  $("go").disabled = true; $("stop").disabled = false; $("result").hidden = true;
+  const prog = $("prog"); prog.hidden = false; prog.value = 0;
+  try {
+    const voice = await withRetry(() => resolveVoice(voiceIn), "ボイス検索");
+    const chunks = splitText(text);
+    log(`${[...text].length}文字を${chunks.length}個に分割して生成します`);
+    prog.max = chunks.length;
+    const pcms = [];
+    for (let i = 0; i < chunks.length; i++) {
+      log(`[${i+1}/${chunks.length}] 生成中…（${[...chunks[i]].length}文字）`);
+      pcms.push(await withRetry(() => synthesize(chunks[i], voice, style, model), `[${i+1}]`));
+      prog.value = i + 1;
+    }
+    const blob = buildWav(pcms);
+    const url = URL.createObjectURL(blob);
+    const fname = `tts_${new Date().toISOString().slice(0,19).replace(/[:T]/g,"-")}.wav`;
+    $("player").src = url; $("dl").href = url; $("dl").download = fname;
+    lastFile = new File([blob], fname, { type: "audio/wav" });
+    $("share").hidden = !(navigator.canShare && navigator.canShare({ files: [lastFile] }));
+    $("result").hidden = false;
+    $("result").scrollIntoView({ behavior: "smooth" });
+    const sec = (blob.size - 44) / 2 / SAMPLE_RATE;
+    log(`完了: ${Math.floor(sec/60)}分${Math.round(sec%60)}秒`);
+  } catch (e) {
+    log(e.name === "AbortError" ? "中止しました" : "エラー: " + e.message, true);
+  } finally {
+    $("go").disabled = false; $("stop").disabled = true; abortCtl = null;
+    wakeLock?.release().catch(() => {});
+  }
+});
+
+let lastFile = null;
+$("share").addEventListener("click", async () => {
+  if (!lastFile) return;
+  try { await navigator.share({ files: [lastFile], title: lastFile.name }); }
+  catch (e) { if (e.name !== "AbortError") log("共有できませんでした: " + e.message, true); }
+});
+
+$("stop").addEventListener("click", () => abortCtl?.abort());
+
+$("listVoices").addEventListener("click", async () => {
+  $("log").innerHTML = "";
+  if (!$("apiKey").value.trim()) return log("API キーを入力してください", true);
+  try {
+    const vs = await listAllVoices();
+    if (!vs.length) return log("保存済みボイスはありません");
+    vs.forEach(v => log(`${voiceName(v) || "(名前なし)"}  →  ${v.id}${v.type ? "  ["+v.type+"]" : ""}`));
+  } catch (e) { log("エラー: " + e.message, true); }
+});
+</script>
+</body>
+</html>
