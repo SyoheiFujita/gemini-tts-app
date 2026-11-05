@@ -5,7 +5,7 @@
 // ===== 設定（3か所を書き換え） =====
 const FOLDER_ID = '1aMnHYz0Ko3SUah4WIdbfOkMvEkXgM6l1';   // 保存先フォルダ
 const TOKEN = 'ここを合言葉に変更';                       // アプリの「合言葉」欄と同じもの
-const GEMINI_API_KEY = 'ここにGeminiのAPIキー';           // AIza... で始まるキー
+const GEMINI_API_KEY = 'ここにGeminiのAPIキー';           // AI Studio のAPIキー（AQ. または AIza で始まる）
 // ===================================
 
 const API = 'https://generativelanguage.googleapis.com/v1beta';
