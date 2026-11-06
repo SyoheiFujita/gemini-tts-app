@@ -27,7 +27,10 @@ const props = PropertiesService.getScriptProperties();
 function doPost(e) {
   try {
     const req = JSON.parse(e.postData.contents);
-    const bad = checkConfig_(req.token);
+    // 合言葉は本文の token を優先し、空なら URL パラメータの token（?token=...）も受け付ける
+    const bodyToken = String(req.token == null ? '' : req.token).trim();
+    const urlToken = String(((e && e.parameter) || {}).token || '').trim();
+    const bad = checkConfig_(bodyToken || urlToken);
     if (bad) return json_({ ok: false, error: bad });
 
     if (req.action === 'status') return json_({ ok: true, jobs: getStatuses_(req.ids || []) });
@@ -366,7 +369,9 @@ function withLock_(fn) {
 function checkConfig_(token) {
   if (TOKEN === 'ここを合言葉に変更') return 'Code.gs の TOKEN（合言葉）を設定してください';
   if (!useVertex_() && /^ここに/.test(GEMINI_API_KEY)) return 'Code.gs の GEMINI_API_KEY を設定してください';
-  if (token !== TOKEN) return '合言葉が違います';
+  // 前後の空白（コピペ時の混入）は無視して比較する
+  const got = String(token == null ? '' : token).trim();
+  if (got !== String(TOKEN).trim()) return `合言葉が違います（受信 ${got.length} 文字）`;
   return '';
 }
 
