@@ -2,15 +2,20 @@
 // スマホのページから文章を受け取り、裏で音声を作ってドライブに WAV で保存します。
 // ページを閉じても処理は続きます。設定方法は README.md を参照してください。
 
-// ===== 設定（3か所を書き換え） =====
+// ===== 設定（書き換える所） =====
 const FOLDER_ID = '1aMnHYz0Ko3SUah4WIdbfOkMvEkXgM6l1';   // 保存先フォルダ
 const TOKEN = 'ここを合言葉に変更';                       // アプリの「合言葉」欄と同じもの
-const GEMINI_API_KEY = 'ここにGeminiのAPIキー';           // AI Studio のAPIキー（AQ. または AIza で始まる）
+// Vertex AI 経由（Google Cloud の課金。GCP の無料クレジットが使える）
+// 空欄にすると下の AI Studio の API キー経由に戻る（こちらは GCP クレジット対象外）
+const VERTEX_PROJECT = 'gen-lang-client-0038328291';   // Google Cloud のプロジェクトID
+const VERTEX_LOCATION = 'global';
+const GEMINI_API_KEY = 'ここにGeminiのAPIキー';           // AI Studio 経由のときだけ使う（AQ. または AIza で始まる）
 // ===================================
 
 const API = 'https://generativelanguage.googleapis.com/v1beta';
+const VERTEX_API = `https://${VERTEX_LOCATION === 'global' ? '' : VERTEX_LOCATION + '-'}aiplatform.googleapis.com/v1beta1/projects/${VERTEX_PROJECT}/locations/${VERTEX_LOCATION}`;
 const DEFAULT_MODEL = 'gemini-3.8-flash-tts';
-const DEFAULT_VOICE = 'test1101';
+const DEFAULT_VOICE = VERTEX_PROJECT ? 'test1101-vertex' : 'test1101';
 const MAX_CHARS = 3000;
 const CHUNK_CHARS = 500;          // 1回のAPI呼び出しで読ませる文字数の目安
 const SAMPLE_RATE = 24000;
@@ -139,7 +144,10 @@ function synthWithRetry_(text, job) {
   }
 }
 
+function useVertex_() { return !!VERTEX_PROJECT; }
+
 function synth_(text, job) {
+  if (useVertex_()) return synthVertex_(text, job);
   const part = { type: 'text', text };
   if (job.style) part.annotations = [{ type: 'speech_metadata', style: job.style }];
   const r = api_('/interactions', {
@@ -154,11 +162,37 @@ function synth_(text, job) {
   return audios[audios.length - 1].data;
 }
 
+// Vertex AI の generateContent。スタイル欄は無いので英語の指示文で前置きする
+// （日本語の前置きは読み上げられてしまう。こえのアトリエで確認済みの形）
+function synthVertex_(text, job) {
+  if (!/^[a-z0-9.-]{1,80}$/.test(job.model)) throw new Error('モデルIDを確認してください: ' + job.model);
+  const voice = job.voiceId;
+  const voiceConfig = /^voice_/.test(voice) ? { voice } : { prebuiltVoiceConfig: { voiceName: voice } };
+  const prompt = job.style ? `Read aloud in this manner (${job.style}): ${text}` : text;
+  const r = api_(`/publishers/google/models/${job.model}:generateContent`, {
+    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig } },
+  });
+  const c = (r.candidates || [])[0];
+  if (!c) throw new Error('音声データが返ってきませんでした: ' + JSON.stringify(r).slice(0, 300));
+  const reason = c.finishReason || c.finish_reason;
+  if (reason && reason !== 'STOP' && reason !== 'FINISH_REASON_UNSPECIFIED') {
+    throw new Error(`音声生成が正常に完了しませんでした（${reason}）`);
+  }
+  const blobs = ((c.content || {}).parts || []).map(p => p.inlineData || p.inline_data).filter(b => b && b.data);
+  if (!blobs.length) throw new Error('音声データが返ってきませんでした: ' + JSON.stringify(r).slice(0, 300));
+  const b = blobs[blobs.length - 1];
+  const rate = /rate=(\d+)/i.exec(b.mimeType || b.mime_type || '');
+  if (rate && Number(rate[1]) !== SAMPLE_RATE) throw new Error('想定外のサンプルレートです: ' + rate[1]);
+  return b.data;
+}
+
 function listVoices_() {
   const out = [];
   let token = '';
   for (let i = 0; i < 50; i++) {
-    const r = api_('/voices?page_size=100' + (token ? '&page_token=' + encodeURIComponent(token) : ''));
+    const q = useVertex_() ? 'type=VOICE_TYPE_PROMPTED&type=VOICE_TYPE_REPLICATED&' : '';
+    const r = api_('/voices?' + q + 'page_size=100' + (token ? '&page_token=' + encodeURIComponent(token) : ''));
     out.push.apply(out, r.voices || []);
     token = r.next_page_token || r.nextPageToken || '';
     if (!token) break;
@@ -172,17 +206,27 @@ function resolveVoice_(input) {
   if (/^(voice_|voicekey_)/.test(input)) return input;
   const vs = listVoices_();
   const hit = vs.find(v => voiceName_(v) === input) || vs.find(v => voiceName_(v).toLowerCase() === input.toLowerCase());
-  return hit ? hit.id : input; // 見つからなければプリセット名として使う
+  if (hit) return hit.id;
+  // プリセット名（Kore など英字1語）以外で見つからないときは、原因が分かるように止める
+  if (!/^[A-Za-z]+$/.test(input)) {
+    throw new Error(`ボイス「${input}」が見つかりません。` + (useVertex_() ? 'AI Studio で作った声は Vertex では使えないので、Vertex 側で作り直してください。' : '') +
+      ' 保存済み: ' + (vs.map(voiceName_).filter(Boolean).join(', ') || 'なし'));
+  }
+  return input; // プリセット名として使う
 }
 
 function api_(path, body) {
-  const opt = { method: body ? 'post' : 'get', headers: { 'x-goog-api-key': GEMINI_API_KEY }, muteHttpExceptions: true };
+  // Vertex はこのスクリプトを実行する自分の Google アカウントで認証し、指定プロジェクトに課金する
+  const headers = useVertex_()
+    ? { Authorization: 'Bearer ' + ScriptApp.getOAuthToken(), 'x-goog-user-project': VERTEX_PROJECT }
+    : { 'x-goog-api-key': GEMINI_API_KEY };
+  const opt = { method: body ? 'post' : 'get', headers, muteHttpExceptions: true };
   if (body) { opt.contentType = 'application/json'; opt.payload = JSON.stringify(body); }
-  const res = UrlFetchApp.fetch(API + path, opt);
+  const res = UrlFetchApp.fetch((useVertex_() ? VERTEX_API : API) + path, opt);
   const code = res.getResponseCode(), t = res.getContentText();
   if (code !== 200) {
     let m = t; try { m = JSON.parse(t).error.message || t; } catch (e) {}
-    const err = new Error(`Gemini API ${code}: ${String(m).slice(0, 500)}`); err.status = code; throw err;
+    const err = new Error(`${useVertex_() ? 'Vertex AI' : 'Gemini API'} ${code}: ${String(m).slice(0, 500)}`); err.status = code; throw err;
   }
   return JSON.parse(t);
 }
@@ -321,7 +365,7 @@ function withLock_(fn) {
 
 function checkConfig_(token) {
   if (TOKEN === 'ここを合言葉に変更') return 'Code.gs の TOKEN（合言葉）を設定してください';
-  if (/^ここに/.test(GEMINI_API_KEY)) return 'Code.gs の GEMINI_API_KEY を設定してください';
+  if (!useVertex_() && /^ここに/.test(GEMINI_API_KEY)) return 'Code.gs の GEMINI_API_KEY を設定してください';
   if (token !== TOKEN) return '合言葉が違います';
   return '';
 }
@@ -339,7 +383,8 @@ function setupCheck() {
   Logger.log('保存先フォルダ: ' + DriveApp.getFolderById(FOLDER_ID).getName());
   const vs = listVoices_();
   Logger.log('保存済みボイス: ' + (vs.map(v => voiceName_(v) + ' (' + v.id + ')').join(', ') || 'なし'));
-  Logger.log('「' + DEFAULT_VOICE + '」→ ' + resolveVoice_(DEFAULT_VOICE));
+  Logger.log('接続先: ' + (useVertex_() ? 'Vertex AI（' + VERTEX_PROJECT + '、GCPクレジット対象）' : 'AI Studio（APIキー）'));
+  try { Logger.log('「' + DEFAULT_VOICE + '」→ ' + resolveVoice_(DEFAULT_VOICE)); } catch (e) { Logger.log(msg_(e)); }
   ScriptApp.getProjectTriggers(); // トリガー作成の権限確認
   Logger.log('OK: 設定は正しく読み込めました');
 }

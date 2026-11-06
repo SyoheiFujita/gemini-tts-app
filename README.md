@@ -11,17 +11,20 @@
 
 1. https://script.google.com を開き、「新しいプロジェクト」を作る
 2. 最初からあるコードを全部消して、[`gas/Code.gs`](gas/Code.gs) の中身を貼り付ける
-3. 冒頭の設定を書き換えて保存する
+3. 左の歯車「プロジェクトの設定」で「appsscript.json マニフェスト ファイルをエディタで表示する」をオンにし、エディタに出た `appsscript.json` を [`gas/appsscript.json`](gas/appsscript.json) の中身に置き換える（Vertex AI を呼ぶ権限 `cloud-platform` を追加するため）
+4. `Code.gs` 冒頭の設定を書き換えて保存する
    - `TOKEN`: 自分だけが知っている合言葉
-   - `GEMINI_API_KEY`: Gemini の API キー
-4. 上の関数選択で `setupCheck` を選んで「実行」する
+   - `VERTEX_PROJECT`: Vertex AI を使う Google Cloud のプロジェクトID（Vertex AI API を有効にしておく）。利用料はこのプロジェクトの請求先アカウントに付き、GCP の無料クレジットが使える
+   - `GEMINI_API_KEY`: `VERTEX_PROJECT` を空欄にしたときだけ使う AI Studio の API キー（こちらは GCP クレジットの対象外）
+5. 上の関数選択で `setupCheck` を選んで「実行」する
    - 権限の確認画面が出たら許可する（「このアプリは Google で確認されていません」と出たら「詳細」→「（プロジェクト名）に移動」）
-   - 実行ログに「OK」と、`test1101` のボイスIDが出れば準備完了
-5. 右上の「デプロイ」→「新しいデプロイ」→ 歯車から「ウェブアプリ」を選び、次のように設定して「デプロイ」
+   - 実行ログに「OK」と、既定のボイス（Vertex では `test1101-vertex`）のIDが出れば準備完了
+   - AI Studio で作った声は Vertex では使えません。Vertex 側で作った声の表示名か `voice_…` のIDをアプリのボイス欄に入れてください
+6. 右上の「デプロイ」→「新しいデプロイ」→ 歯車から「ウェブアプリ」を選び、次のように設定して「デプロイ」
    - 次のユーザーとして実行: **自分**
    - アクセスできるユーザー: **全員**
-6. 表示された「ウェブアプリの URL」（`https://script.google.com/macros/s/.../exec`）をコピーする
-7. スマホでアプリを開き、「設定」に URL と合言葉を入力する
+7. 表示された「ウェブアプリの URL」（`https://script.google.com/macros/s/.../exec`）をコピーする
+8. スマホでアプリを開き、「設定」に URL と合言葉を入力する
 
 「アクセスできるユーザー: 全員」はスマホのページからログインなしで送れるようにするためです。合言葉が合わない依頼は受け付けません。URL と合言葉は人に教えないでください。
 
